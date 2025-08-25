@@ -1,0 +1,62 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  patient
+  provider
+}
+
+model User {
+  id String @id @default(uuid())
+  email String @unique
+  name String
+  role Role
+  passwordHash String
+  phone String?
+  createdAt DateTime @default(now())
+
+  patientAppointments Appointment[] @relation("PatientAppointments")
+  providerAppointments Appointment[] @relation("ProviderAppointments")
+  slots ProviderSlot[]
+}
+
+model ProviderSlot {
+  id String @id @default(uuid())
+  providerId String
+  startTime DateTime
+  endTime DateTime
+  isBooked Boolean @default(false)
+
+  provider User @relation(fields: [providerId], references: [id])
+  appointment Appointment?
+  @@unique([providerId, startTime])
+  @@index([providerId, startTime])
+}
+
+model Appointment {
+  id String @id @default(uuid())
+  providerId String
+  patientId String
+  slotId String @unique
+  status String @default("booked")
+  reason String?
+  createdAt DateTime @default(now())
+
+  provider User @relation("ProviderAppointments", fields: [providerId], references: [id])
+  patient User @relation("PatientAppointments", fields: [patientId], references: [id])
+  slot ProviderSlot @relation(fields: [slotId], references: [id])
+
+  @@index([providerId, patientId])
+}

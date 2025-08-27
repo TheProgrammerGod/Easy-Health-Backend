@@ -23,7 +23,8 @@ app.use('/auth', authRoutes);
 
 //all routes below this require auth
 app.use(authRequired);
-app.use('/providers', ((_, res)=>res.status(501).json({error:'not_implemented'})));
+// app.use('/providers', ((_, res)=>res.status(501).json({error:'not_implemented'})));
+app.use('/providers', providerRoutes);
 app.use('/appointments',  ((_, res)=>res.status(501).json({error:'not_implemented'})));
 
 const port = process.env.PORT || 3000;

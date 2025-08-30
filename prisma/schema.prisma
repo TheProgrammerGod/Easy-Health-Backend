@@ -26,9 +26,21 @@ model User {
   passwordHash String
   phone String?
   createdAt DateTime @default(now())
+  provider Provider?
 
   patientAppointments Appointment[] @relation("PatientAppointments")
   providerAppointments Appointment[] @relation("ProviderAppointments")
+}
+
+model Provider{
+  id String @id @default(uuid())
+  userId String @unique
+  speciality String
+  description String?
+  experience String?
+  appointmentFee Decimal
+
+  user User @relation(fields: [userId], references: [id])
   slots ProviderSlot[]
 }
 
@@ -39,7 +51,7 @@ model ProviderSlot {
   endTime DateTime
   isBooked Boolean @default(false)
 
-  provider User @relation(fields: [providerId], references: [id])
+  provider Provider @relation(fields: [providerId], references: [id])
   appointment Appointment?
   @@unique([providerId, startTime])
   @@index([providerId, startTime])

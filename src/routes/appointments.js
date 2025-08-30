@@ -3,46 +3,9 @@ const { Router } = require('express');
 const { prisma } = require('../db');
 const { authRequired } = require('../middleware/auth');
 const { requireRole } = require('../middleware/requireRole');
-const { compare } = require('bcryptjs');
 
 const r = Router();
 
-// Dummy doctors data (since you don't have a doctors API yet)
-const dummyDoctors = [
-  {
-    id: 'doc1',
-    name: 'Dr. Richard James',
-    speciality: 'General physician',
-    degree: 'MBBS',
-    experience: '4 Years',
-    about: 'Dr. Davis has a strong commitment to delivering comprehensive medical care, focusing on preventive medicine, early diagnosis, and effective treatment strategies.',
-    fees: 50,
-    address: { line1: '17th Cross, Richmond', line2: 'Circle, Ring Road, London' },
-    image: '/api/placeholder/doctor1.jpg'
-  },
-  {
-    id: 'doc_2', 
-    name: 'Dr. Emily Larson',
-    speciality: 'Gynecologist',
-    degree: 'MBBS',
-    experience: '3 Years',
-    about: 'Dr. Larson has a strong commitment to delivering comprehensive medical care, focusing on preventive medicine, early diagnosis, and effective treatment strategies.',
-    fees: 60,
-    address: { line1: '27th Cross, Richmond', line2: 'Circle, Ring Road, London' },
-    image: '/api/placeholder/doctor2.jpg'
-  },
-  {
-    id: 'doc_3',
-    name: 'Dr. Sarah Patel',
-    speciality: 'Dermatologist', 
-    degree: 'MBBS',
-    experience: '1 Years',
-    about: 'Dr. Patel has a strong commitment to delivering comprehensive medical care, focusing on preventive medicine, early diagnosis, and effective treatment strategies.',
-    fees: 30,
-    address: { line1: '37th Cross, Richmond', line2: 'Circle, Ring Road, London' },
-    image: '/api/placeholder/doctor3.jpg'
-  }
-];
 function normalizeTime(timeStr) {
   // Match 12-hour format e.g. "06:00 pm" or "6:00 AM"
   const ampmMatch = timeStr.match(/(\d{1,2}):(\d{2})\s?(AM|PM|am|pm)/);
@@ -64,28 +27,47 @@ function normalizeTime(timeStr) {
 
 /**
  * POST /appointments/book
- * body: { doctorId, slotDate, slotTime, reason? }
+ * body: { providerId, slotDate, slotTime, reason? }
  * Books an appointment for the authenticated user
  */
 r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
   try {
-    const { doctorId, slotDate, slotTime, reason } = req.body || {};
+    const { providerId, slotDate, slotTime, reason } = req.body || {};
     const patientId = req.auth.userId;
-    console.log(doctorId,slotDate,slotTime,reason)
+    
+    console.log('Booking request:', { providerId, slotDate, slotTime, reason });
+    
     // Validate input
-    if (!doctorId || !slotDate || !slotTime) {
+    if (!providerId || !slotDate || !slotTime) {
       return res.status(400).json({ error: 'missing_required_fields' });
     }
 
-    // Check if doctor exists in dummy data
-    const doctor = dummyDoctors.find(doc => doc.id === doctorId);
-    if (!doctor) {
-      return res.status(404).json({ error: 'doctor_not_found' });
+    // Check if provider exists in database
+    const provider = await prisma.provider.findUnique({
+      where: { id: providerId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true
+          }
+        }
+      }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_not_found' });
+    }
+
+    // Verify the provider user has the correct role
+    if (provider.user.role !== 'provider') {
+      return res.status(400).json({ error: 'invalid_provider' });
     }
 
     // Parse slot date and time
     const [day, month, year] = slotDate.split("_");
-
     const normalizedTime = normalizeTime(slotTime);
 
     const slotDateTime = new Date(
@@ -109,41 +91,68 @@ r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
     const endTime = new Date(slotDateTime);
     endTime.setMinutes(endTime.getMinutes() + 30);
 
-    // Create a provider slot first
-    const providerSlot = await prisma.providerSlot.create({
-      data: {
-        providerId: doctorId, // Using doctorId as providerId for now
+    // Check if this time slot is already booked for this provider
+    const existingSlot = await prisma.providerSlot.findFirst({
+      where: {
+        providerId: providerId,
         startTime: slotDateTime,
-        endTime: endTime,
         isBooked: true
       }
     });
 
-    // Create the appointment
-    const appointment = await prisma.appointment.create({
-      data: {
-        providerId: doctorId,
-        patientId: patientId,
-        slotId: providerSlot.id,
-        status: 'booked',
-        reason: reason || null
-      },
-      include: {
-        slot: true
-      }
+    if (existingSlot) {
+      return res.status(409).json({ error: 'slot_already_booked' });
+    }
+
+    // Use transaction to ensure data consistency
+    const result = await prisma.$transaction(async (tx) => {
+      // Create a provider slot first
+      const providerSlot = await tx.providerSlot.create({
+        data: {
+          providerId: providerId,
+          startTime: slotDateTime,
+          endTime: endTime,
+          isBooked: true
+        }
+      });
+
+      // Create the appointment
+      const appointment = await tx.appointment.create({
+        data: {
+          providerId: provider.user.id, // Use the User ID for the appointment
+          patientId: patientId,
+          slotId: providerSlot.id,
+          status: 'booked',
+          reason: reason || null
+        },
+        include: {
+          slot: true,
+          provider: {
+            select: {
+              id: true,
+              name: true,
+              role: true
+            }
+          }
+        }
+      });
+
+      return { appointment, providerSlot, provider };
     });
 
     res.status(201).json({
       message: 'Appointment booked successfully',
       appointment: {
-        id: appointment.id,
-        doctorId: doctorId,
-        doctorName: doctor.name,
+        id: result.appointment.id,
+        providerId: providerId,
+        providerName: provider.user.name,
+        providerSpeciality: provider.speciality,
         date: slotDate,
         time: slotTime,
-        status: appointment.status,
-        reason: appointment.reason,
-        createdAt: appointment.createdAt
+        status: result.appointment.status,
+        reason: result.appointment.reason,
+        appointmentFee: provider.appointmentFee,
+        createdAt: result.appointment.createdAt
       }
     });
 
@@ -172,31 +181,47 @@ r.get('/my-appointments', authRequired, requireRole('patient'), async (req, res)
         patientId: patientId
       },
       include: {
-        slot: true
+        slot: {
+          include: {
+            provider: {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    name: true,
+                    email: true
+                  }
+                }
+              }
+            }
+          }
+        },
+        provider: {
+          select: {
+            id: true,
+            name: true,
+            email: true
+          }
+        }
       },
       orderBy: {
         createdAt: 'desc'
       }
     });
 
-    // Enrich appointments with doctor data from dummy data
+    // Transform appointments with provider data from database
     const enrichedAppointments = appointments.map(appointment => {
-      const doctor = dummyDoctors.find(doc => doc.id === appointment.providerId) || {
-        id: appointment.providerId,
-        name: 'Unknown Doctor',
-        speciality: 'General',
-        address: { line1: 'Address not available', line2: '' },
-        image: '/api/placeholder/default-doctor.jpg'
-      };
-
+      const provider = appointment.slot.provider;
+      
       return {
         id: appointment.id,
-        doctor: {
-          id: doctor.id,
-          name: doctor.name,
-          speciality: doctor.speciality,
-          image: doctor.image,
-          address: doctor.address
+        provider: {
+          id: provider.id,
+          name: provider.user.name,
+          speciality: provider.speciality,
+          experience: provider.experience,
+          appointmentFee: provider.appointmentFee,
+          description: provider.description
         },
         date: appointment.slot.startTime,
         time: appointment.slot.startTime.toLocaleTimeString('en-US', {
@@ -254,7 +279,7 @@ r.put('/:appointmentId/cancel', authRequired, requireRole('patient'), async (req
       return res.status(400).json({ error: 'appointment_already_cancelled' });
     }
 
-    // Update appointment status and slot availability
+    // Update appointment status and slot availability using transaction
     await prisma.$transaction([
       prisma.appointment.update({
         where: { id: appointmentId },
@@ -275,22 +300,34 @@ r.put('/:appointmentId/cancel', authRequired, requireRole('patient'), async (req
 });
 
 /**
- * GET /appointments/available-slots/:doctorId
- * Returns available slots for a doctor (for future use)
+ * GET /appointments/available-slots/:providerId
+ * Returns available slots for a provider
  */
-r.get('/available-slots/:doctorId', authRequired, async (req, res) => {
+r.get('/available-slots/:providerId', authRequired, async (req, res) => {
   try {
-    const { doctorId } = req.params;
+    const { providerId } = req.params;
     const { date } = req.query; // Expected format: YYYY-MM-DD
 
     if (!date) {
       return res.status(400).json({ error: 'date_required' });
     }
 
-    // Check if doctor exists
-    const doctor = dummyDoctors.find(doc => doc.id === doctorId);
-    if (!doctor) {
-      return res.status(404).json({ error: 'doctor_not_found' });
+    // Check if provider exists
+    const provider = await prisma.provider.findUnique({
+      where: { id: providerId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            role: true
+          }
+        }
+      }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_not_found' });
     }
 
     // Get booked slots for the date
@@ -299,7 +336,7 @@ r.get('/available-slots/:doctorId', authRequired, async (req, res) => {
 
     const bookedSlots = await prisma.providerSlot.findMany({
       where: {
-        providerId: doctorId,
+        providerId: providerId,
         startTime: {
           gte: startOfDay,
           lte: endOfDay
@@ -338,11 +375,66 @@ r.get('/available-slots/:doctorId', authRequired, async (req, res) => {
       }
     }
 
-    res.json({ availableSlots });
+    res.json({ 
+      provider: {
+        id: provider.id,
+        name: provider.user.name,
+        speciality: provider.speciality,
+        appointmentFee: provider.appointmentFee
+      },
+      availableSlots 
+    });
 
   } catch (error) {
     console.error('Get available slots error:', error);
     res.status(500).json({ error: 'fetch_slots_failed' });
+  }
+});
+
+/**
+ * GET /appointments/providers
+ * Returns all available providers
+ */
+r.get('/providers', authRequired, async (req, res) => {
+  try {
+    const providers = await prisma.provider.findMany({
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            createdAt: true
+          }
+        }
+      },
+      orderBy: {
+        user: {
+          createdAt: 'desc'
+        }
+      }
+    });
+
+    const formattedProviders = providers.map(provider => ({
+      id: provider.id,
+      name: provider.user.name,
+      email: provider.user.email,
+      speciality: provider.speciality,
+      description: provider.description,
+      experience: provider.experience,
+      appointmentFee: Number(provider.appointmentFee),
+      createdAt: provider.user.createdAt
+    }));
+
+    res.json({
+      providers: formattedProviders,
+      total: formattedProviders.length
+    });
+
+  } catch (error) {
+    console.error('Fetch providers error:', error);
+    res.status(500).json({ error: 'fetch_providers_failed' });
   }
 });
 

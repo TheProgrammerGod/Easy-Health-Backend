@@ -439,4 +439,166 @@ r.get('/providers', authRequired, async (req, res) => {
   }
 });
 
+// Add this to src/routes/appointments.js or create a new routes/profile.js
+
+/**
+ * GET /appointments/provider-profile
+ * Returns the provider profile for the authenticated provider
+ */
+r.get('/provider-profile', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const userId = req.auth.userId;
+
+    // Find the provider record along with user details
+    const provider = await prisma.provider.findUnique({
+      where: { 
+        userId: userId 
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            phone: true,
+            role: true,
+            createdAt: true
+          }
+        }
+      }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_not_found' });
+    }
+
+    // Format the response to match the expected structure
+    const profileData = {
+      _id: provider.id,
+      name: provider.user.name,
+      email: provider.user.email,
+      phone: provider.user.phone,
+      image: `https://via.placeholder.com/300/4F46E5/FFFFFF?Text=${encodeURIComponent(provider.user.name.substring(0, 2))}`,
+      speciality: provider.speciality,
+      degree: 'MBBS', // Default degree - you might want to add this to the database
+      experience: provider.experience,
+      about: provider.description || `Dr. ${provider.user.name} has a strong commitment to delivering comprehensive medical care, focusing on preventive medicine, early diagnosis, and effective treatment strategies.`,
+      fees: Number(provider.appointmentFee),
+      address: { 
+        line1: '123 Medical Center', // Default address - you might want to add this to the database
+        line2: 'Healthcare District' 
+      },
+      available: true, // You might want to add this field to the database
+      createdAt: provider.user.createdAt
+    };
+
+    res.json({ profile: profileData });
+
+  } catch (error) {
+    console.error('Fetch provider profile error:', error);
+    res.status(500).json({ error: 'fetch_profile_failed' });
+  }
+});
+
+/**
+ * PUT /appointments/provider-profile
+ * Updates the provider profile for the authenticated provider
+ */
+r.put('/provider-profile', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const userId = req.auth.userId;
+    const { 
+      about, 
+      fees, 
+      address, 
+      available, 
+      speciality, 
+      experience,
+      name,
+      phone 
+    } = req.body || {};
+
+    // Validate appointment fee if provided
+    if (fees !== undefined) {
+      const fee = parseFloat(fees);
+      if (isNaN(fee) || fee < 10 || fee > 1000) {
+        return res.status(400).json({ error: 'invalid_appointment_fee' });
+      }
+    }
+
+    // Use transaction to update both user and provider records
+    const result = await prisma.$transaction(async (tx) => {
+      // Update user record if name or phone is provided
+      const userUpdateData = {};
+      if (name) userUpdateData.name = name;
+      if (phone) userUpdateData.phone = phone;
+
+      let updatedUser;
+      if (Object.keys(userUpdateData).length > 0) {
+        updatedUser = await tx.user.update({
+          where: { id: userId },
+          data: userUpdateData
+        });
+      } else {
+        updatedUser = await tx.user.findUnique({
+          where: { id: userId }
+        });
+      }
+
+      // Update provider record
+      const providerUpdateData = {};
+      if (about !== undefined) providerUpdateData.description = about;
+      if (fees !== undefined) providerUpdateData.appointmentFee = parseFloat(fees);
+      if (speciality) providerUpdateData.speciality = speciality;
+      if (experience) providerUpdateData.experience = experience;
+
+      let updatedProvider;
+      if (Object.keys(providerUpdateData).length > 0) {
+        updatedProvider = await tx.provider.update({
+          where: { userId: userId },
+          data: providerUpdateData
+        });
+      } else {
+        updatedProvider = await tx.provider.findUnique({
+          where: { userId: userId }
+        });
+      }
+
+      return { user: updatedUser, provider: updatedProvider };
+    });
+
+    // Format the response
+    const profileData = {
+      _id: result.provider.id,
+      name: result.user.name,
+      email: result.user.email,
+      phone: result.user.phone,
+      image: `https://via.placeholder.com/300/4F46E5/FFFFFF?Text=${encodeURIComponent(result.user.name.substring(0, 2))}`,
+      speciality: result.provider.speciality,
+      degree: 'MBBS',
+      experience: result.provider.experience,
+      about: result.provider.description,
+      fees: Number(result.provider.appointmentFee),
+      address: address || { 
+        line1: '123 Medical Center', 
+        line2: 'Healthcare District' 
+      },
+      available: available !== undefined ? available : true
+    };
+
+    res.json({ 
+      message: 'Profile updated successfully',
+      profile: profileData 
+    });
+
+  } catch (error) {
+    console.error('Update provider profile error:', error);
+    
+    if (error.code === 'P2002') {
+      return res.status(409).json({ error: 'email_already_exists' });
+    }
+    
+    res.status(500).json({ error: 'update_profile_failed' });
+  }
+});
 module.exports = r;

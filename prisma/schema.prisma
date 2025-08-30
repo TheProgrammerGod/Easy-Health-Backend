@@ -27,9 +27,19 @@ model User {
   phone String?
   createdAt DateTime @default(now())
   provider Provider?
+  patient Patient?
 
-  patientAppointments Appointment[] @relation("PatientAppointments")
-  providerAppointments Appointment[] @relation("ProviderAppointments")
+}
+
+model Patient{
+  id String @id @default(uuid())
+  userId String @unique
+  age Int
+  gender String
+  address String?
+
+  user User @relation(fields: [userId], references: [id])
+  appointments Appointment[] @relation("PatientAppointments")
 }
 
 model Provider{
@@ -42,6 +52,7 @@ model Provider{
 
   user User @relation(fields: [userId], references: [id])
   slots ProviderSlot[]
+  appointments Appointment[] @relation("ProviderAppointments")
 }
 
 model ProviderSlot {
@@ -66,8 +77,8 @@ model Appointment {
   reason String?
   createdAt DateTime @default(now())
 
-  provider User @relation("ProviderAppointments", fields: [providerId], references: [id])
-  patient User @relation("PatientAppointments", fields: [patientId], references: [id])
+  provider Provider @relation("ProviderAppointments", fields: [providerId], references: [id])
+  patient Patient @relation("PatientAppointments", fields: [patientId], references: [id])
   slot ProviderSlot @relation(fields: [slotId], references: [id])
 
   @@index([providerId, patientId])

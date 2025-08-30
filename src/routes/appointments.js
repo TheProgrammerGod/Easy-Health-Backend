@@ -168,6 +168,7 @@ r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
   }
 });
 
+
 /**
  * GET /appointments/my-appointments
  * Returns all appointments for the authenticated user

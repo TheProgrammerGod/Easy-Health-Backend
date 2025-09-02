@@ -40,6 +40,7 @@ model Patient{
 
   user User @relation(fields: [userId], references: [id])
   appointments Appointment[] @relation("PatientAppointments")
+  medicalDocuments MedicalDocument[]
 }
 
 model Provider{
@@ -82,4 +83,21 @@ model Appointment {
   slot ProviderSlot @relation(fields: [slotId], references: [id])
 
   @@index([providerId, patientId])
+}
+
+model MedicalDocument {
+  id              String   @id @default(cuid())
+  patientId       String
+  originalFileName String
+  fileName        String   // Stored filename in Azure Blob
+  fileSize        Int
+  mimeType        String
+  blobPath        String   // Path in Azure Blob Storage
+  uploadDate      DateTime @default(now())
+  createdAt       DateTime @default(now())
+  
+  // Relations
+  patient         Patient  @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  
+  @@index([patientId])
 }

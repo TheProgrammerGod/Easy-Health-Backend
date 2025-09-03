@@ -199,72 +199,59 @@ router.get('/my-documents', authRequired, requireRole('patient'), async (req, re
   }
 });
 
+
 /**
  * GET /documents/patient/:patientId
  * Provider gets medical documents for a specific patient
  */
-// router.get('/patient/:patientId', authRequired, requireRole('provider'), async (req, res) => {
-//   try {
-//     const { patientId } = req.params;
+router.get('/patient/:patientId', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const { patientId } = req.params; // This is Patient.id from your URL
 
-//     console.log('Provider requesting documents for patient:', patientId);
-//     console.log('Provider user ID:', req.auth.userId);
+    // console.log('Provider requesting documents for patient:', patientId);
+    // console.log('Provider user ID:', req.auth.userId);
 
-//     // const patient = await prisma.patient.findUnique({
-//     //   where: { userId: req.auth.userId }
-//     // });
+    // Find patient by Patient.id (not User.id)
+    const patient = await prisma.patient.findUnique({
+      where: { id: patientId },
+      include: {
+        user: {
+          select: { name: true, email: true }
+        }
+      }
+    });
     
-//     // Verify patient exists
-//     // const patient = await prisma.patient.findUnique({
-//     //   where: { userId: patientId },
-//     //   include: {
-//     //     user: {
-//     //       select: { name: true, email: true }
-//     //     }
-//     //   }
-//     // });
+    if (!patient) {
+      return res.status(404).json({ error: 'Patient not found' });
+    }
 
-//     const patient = await prisma.patient.findUnique({
-//       where: { id: patientId }, 
-//       include: {
-//         user: {
-//           select: { name: true, email: true }
-//         }
-//       }
-//     });
-    
-    
-//     if (!patient) {
-//       return res.status(404).json({ error: 'Patient not found' });
-//     }
+    // Get documents for this patient
+    const documents = await prisma.medicalDocument.findMany({
+      where: { patientId: patient.id },
+      orderBy: { uploadDate: 'desc' },
+      select: {
+        id: true,
+        originalFileName: true,
+        fileSize: true,
+        uploadDate: true,
+        mimeType: true
+      }
+    });
 
-//     const documents = await prisma.medicalDocument.findMany({
-//       where: { patientId: patient.patientId },
-//       orderBy: { uploadDate: 'desc' },
-//       select: {
-//         id: true,
-//         originalFileName: true,
-//         fileSize: true,
-//         uploadDate: true,
-//         mimeType: true
-//       }
-//     });
+    res.json({ 
+      patient: {
+        id: patient.id, // This is the Patient.id
+        name: patient.user.name,
+        email: patient.user.email
+      },
+      documents 
+    });
 
-//     res.json({ 
-//       patient: {
-//         // id: patient.id,
-//         id: patientId,
-//         name: patient.user.name,
-//         email: patient.user.email
-//       },
-//       documents 
-//     });
-
-//   } catch (error) {
-//     console.error('Failed to fetch patient documents:', error);
-//     res.status(500).json({ error: 'Failed to fetch patient documents' });
-//   }
-// });
+  } catch (error) {
+    console.error('Failed to fetch patient documents:', error);
+    res.status(500).json({ error: 'Failed to fetch patient documents' });
+  }
+});
 
 /**
  * GET /documents/:documentId/download

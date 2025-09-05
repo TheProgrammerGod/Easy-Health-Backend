@@ -31,5 +31,5 @@ app.use('/appointments', appointmentRoutes); // ✅ Now actually using the appoi
 app.use('/documents', documentRoutes);
 // app.use('/medical-records', medicalRecordsRoutes);
 
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 8080;
 app.listen(port,'0.0.0.0', () => console.log(`API running on port ${port}`))

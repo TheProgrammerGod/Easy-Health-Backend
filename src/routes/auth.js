@@ -11,16 +11,25 @@ const r = Router();
  * POST /auth/register
  * body: {name, email, password, role: "patient"|"provider", phone?, speciality?, experience?, description?, appointmentFee?}
  */
+// Updated registration endpoint in src/routes/auth.js
 r.post('/register', async (req, res) => {
     try{
-        const {name, email, password, role, phone, speciality, experience, description, appointmentFee, age, gender} = req.body || {};
+        const {name, email, password, role, phone, speciality, experience, description, appointmentFee, age, gender, address} = req.body || {};
         
         if(!name || !email || !password || !['patient', 'provider'].includes(role)){
             return res.status(400).json({error: 'invalid_input'});
         }
         
-        if(role === 'patient' && (!age || !gender)) {
-            return res.status(400).json({error: 'Age and gender are required for patient registration'});
+        // Additional validation for patients
+        if(role === 'patient') {
+            if(!age || !gender) {
+                return res.status(400).json({error: 'Age and gender are required for patient registration'});
+            }
+            
+            const ageNum = parseInt(age);
+            if(isNaN(ageNum) || ageNum < 1 || ageNum > 120) {
+                return res.status(400).json({error: 'Please provide a valid age between 1 and 120'});
+            }
         }
 
         // Additional validation for providers
@@ -42,7 +51,7 @@ r.post('/register', async (req, res) => {
 
         const passwordHash = await bcrypt.hash(password, 12);
 
-        // Use transaction to create user and provider record
+        // Use transaction to create user and role-specific record
         const result = await prisma.$transaction(async (tx) => {
             // Create user
             const user = await tx.user.create({
@@ -62,12 +71,10 @@ r.post('/register', async (req, res) => {
                         userId: user.id,
                         age: parseInt(age),
                         gender,
-                        address: null // Will be filled later in profile
+                        address: address || null
                     }
                 });
             } else if (role === 'provider') {
-                // You might want to create Provider record here too
-                // await tx.provider.create({ ... });
                 await tx.provider.create({
                     data: {
                         userId: user.id,
@@ -78,20 +85,6 @@ r.post('/register', async (req, res) => {
                     }
                 });
             }
-
-
-            // If user is a provider, create provider record
-            // if(role === 'provider') {
-            //     await tx.provider.create({
-            //         data: {
-            //             userId: user.id,
-            //             speciality,
-            //             experience: experience || '1 Years',
-            //             description: description || `${name} is a qualified ${speciality} with professional medical experience.`,
-            //             appointmentFee: parseFloat(appointmentFee)
-            //         }
-            //     });
-            // }
 
             return user;
         });

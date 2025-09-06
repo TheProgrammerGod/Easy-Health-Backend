@@ -30,10 +30,15 @@ function normalizeTime(timeStr) {
  * body: { providerId, slotDate, slotTime, reason? }
  * Books an appointment for the authenticated user
  */
+/**
+ * POST /appointments/book
+ * body: { providerId, slotDate, slotTime, reason? }
+ * Books an appointment for the authenticated user
+ */
 r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
   try {
     const { providerId, slotDate, slotTime, reason } = req.body || {};
-    const patientId = req.auth.userId;
+    const userId = req.auth.userId; // This is User.id, not Patient.id
     
     console.log('Booking request:', { providerId, slotDate, slotTime, reason });
     
@@ -41,6 +46,17 @@ r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
     if (!providerId || !slotDate || !slotTime) {
       return res.status(400).json({ error: 'missing_required_fields' });
     }
+
+    // Get the Patient record using the User.id
+    const patient = await prisma.patient.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!patient) {
+      return res.status(404).json({ error: 'patient_profile_not_found' });
+    }
+
+    const patientId = patient.id; // This is the actual Patient.id
 
     // Check if provider exists in database
     const provider = await prisma.provider.findUnique({
@@ -109,7 +125,7 @@ r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
       // Create a provider slot first
       const providerSlot = await tx.providerSlot.create({
         data: {
-          providerId: providerId,
+          providerId: providerId, // This should be Provider.id
           startTime: slotDateTime,
           endTime: endTime,
           isBooked: true
@@ -119,8 +135,8 @@ r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
       // Create the appointment
       const appointment = await tx.appointment.create({
         data: {
-          providerId: provider.user.id, // Use the User ID for the appointment
-          patientId: patientId,
+          providerId: providerId, // ✅ Use Provider.id, not User.id
+          patientId: patientId,   // ✅ Use Patient.id, not User.id
           slotId: providerSlot.id,
           status: 'booked',
           reason: reason || null
@@ -128,10 +144,14 @@ r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
         include: {
           slot: true,
           provider: {
-            select: {
-              id: true,
-              name: true,
-              role: true
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  name: true,
+                  role: true
+                }
+              }
             }
           }
         }
@@ -173,13 +193,28 @@ r.post('/book', authRequired, requireRole('patient'), async (req, res) => {
  * GET /appointments/my-appointments
  * Returns all appointments for the authenticated user
  */
+/**
+ * GET /appointments/my-appointments
+ * Returns all appointments for the authenticated user
+ */
 r.get('/my-appointments', authRequired, requireRole('patient'), async (req, res) => {
   try {
-    const patientId = req.auth.userId;
+    const userId = req.auth.userId; // This is User.id
+
+    // Get the Patient record using the User.id
+    const patient = await prisma.patient.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!patient) {
+      return res.status(404).json({ error: 'patient_profile_not_found' });
+    }
+
+    const patientId = patient.id; // This is the actual Patient.id
 
     const appointments = await prisma.appointment.findMany({
       where: {
-        patientId: patientId
+        patientId: patientId // ✅ Use Patient.id instead of User.id
       },
       include: {
         slot: {
@@ -195,13 +230,6 @@ r.get('/my-appointments', authRequired, requireRole('patient'), async (req, res)
                 }
               }
             }
-          }
-        },
-        provider: {
-          select: {
-            id: true,
-            name: true,
-            email: true
           }
         }
       },
@@ -251,16 +279,31 @@ r.get('/my-appointments', authRequired, requireRole('patient'), async (req, res)
  * PUT /appointments/:appointmentId/cancel
  * Cancels an appointment
  */
+/**
+ * PUT /appointments/:appointmentId/cancel
+ * Cancels an appointment
+ */
 r.put('/:appointmentId/cancel', authRequired, requireRole('patient'), async (req, res) => {
   try {
     const { appointmentId } = req.params;
-    const patientId = req.auth.userId;
+    const userId = req.auth.userId; // This is User.id
+
+    // Get the Patient record using the User.id
+    const patient = await prisma.patient.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!patient) {
+      return res.status(404).json({ error: 'patient_profile_not_found' });
+    }
+
+    const patientId = patient.id; // This is the actual Patient.id
 
     // Find the appointment
     const appointment = await prisma.appointment.findFirst({
       where: {
         id: appointmentId,
-        patientId: patientId
+        patientId: patientId // ✅ Use Patient.id instead of User.id
       },
       include: {
         slot: true

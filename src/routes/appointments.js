@@ -644,4 +644,495 @@ r.put('/provider-profile', authRequired, requireRole('provider'), async (req, re
     res.status(500).json({ error: 'update_profile_failed' });
   }
 });
+
+// Add this to your src/routes/appointments.js file
+
+/**
+ * GET /appointments/doctor-appointments
+ * Returns all appointments for the authenticated doctor/provider
+ * Includes patient details, appointment status, and scheduling information
+ */
+r.get('/doctor-appointments', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const userId = req.auth.userId; // This is the User.id
+
+    // Get the Provider record using the User.id
+    const provider = await prisma.provider.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_profile_not_found' });
+    }
+
+    const providerId = provider.id; // This is the actual Provider.id
+
+    // Get all appointments for this provider with patient and slot details
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        providerId: providerId
+      },
+      include: {
+        patient: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                phone: true,
+                createdAt: true
+              }
+            }
+          }
+        },
+        slot: {
+          select: {
+            startTime: true,
+            endTime: true
+          }
+        },
+        provider: {
+          select: {
+            appointmentFee: true,
+            speciality: true
+          }
+        }
+      },
+      orderBy: [
+        {
+          slot: {
+            startTime: 'desc'
+          }
+        },
+        {
+          createdAt: 'desc'
+        }
+      ]
+    });
+
+    // Transform appointments to match the expected format for doctor dashboard
+    const formattedAppointments = appointments.map(appointment => ({
+      _id: appointment.id,
+      userData: {
+        name: appointment.patient.user.name,
+        email: appointment.patient.user.email,
+        phone: appointment.patient.user.phone || 'N/A',
+        image: `https://via.placeholder.com/100/4F46E5/FFFFFF?Text=${encodeURIComponent(appointment.patient.user.name.substring(0, 2))}`,
+        dob: null, // You might want to add date of birth to patient model if needed
+        age: appointment.patient.age,
+        gender: appointment.patient.gender,
+        address: appointment.patient.address || 'N/A'
+      },
+      slotDate: appointment.slot.startTime.toISOString().split('T')[0], // YYYY-MM-DD format
+      slotTime: appointment.slot.startTime.toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      }),
+      amount: Number(appointment.provider.appointmentFee),
+      payment: true, // Assuming online payment by default
+      cancelled: appointment.status === 'cancelled',
+      isCompleted: appointment.status === 'completed',
+      status: appointment.status,
+      reason: appointment.reason,
+      appointmentDate: appointment.slot.startTime,
+      endTime: appointment.slot.endTime,
+      createdAt: appointment.createdAt,
+      patientId: appointment.patient.id,
+      slotId: appointment.slotId
+    }));
+
+    // Calculate dashboard statistics
+    const totalAppointments = appointments.length;
+    const completedAppointments = appointments.filter(apt => apt.status === 'completed').length;
+    const cancelledAppointments = appointments.filter(apt => apt.status === 'cancelled').length;
+    const upcomingAppointments = appointments.filter(apt => 
+      apt.status === 'booked' && new Date(apt.slot.startTime) > new Date()
+    ).length;
+    
+    // Calculate earnings from completed appointments
+    const totalEarnings = appointments
+      .filter(apt => apt.status === 'completed')
+      .reduce((sum, apt) => sum + Number(apt.provider.appointmentFee), 0);
+
+    // Get unique patients count
+    const uniquePatients = new Set(appointments.map(apt => apt.patientId)).size;
+
+    // Get latest appointments for dashboard preview (last 5)
+    const latestAppointments = formattedAppointments.slice(0, 5);
+
+    res.json({
+      success: true,
+      appointments: formattedAppointments,
+      dashData: {
+        appointments: totalAppointments,
+        patients: uniquePatients,
+        earnings: totalEarnings,
+        completed: completedAppointments,
+        cancelled: cancelledAppointments,
+        upcoming: upcomingAppointments,
+        latestAppointments: latestAppointments
+      },
+      total: totalAppointments,
+      statistics: {
+        totalAppointments,
+        completedAppointments,
+        cancelledAppointments,
+        upcomingAppointments,
+        totalEarnings,
+        uniquePatients
+      }
+    });
+
+  } catch (error) {
+    console.error('Fetch doctor appointments error:', error);
+    res.status(500).json({ error: 'fetch_appointments_failed' });
+  }
+});
+
+/**
+ * PUT /appointments/:appointmentId/complete
+ * Mark an appointment as completed by the doctor
+ */
+r.put('/:appointmentId/complete', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+    const userId = req.auth.userId;
+
+    // Get the Provider record using the User.id
+    const provider = await prisma.provider.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_profile_not_found' });
+    }
+
+    const providerId = provider.id;
+
+    // Find the appointment and verify it belongs to this provider
+    const appointment = await prisma.appointment.findFirst({
+      where: {
+        id: appointmentId,
+        providerId: providerId
+      },
+      include: {
+        slot: true
+      }
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ error: 'appointment_not_found' });
+    }
+
+    // Check if appointment is already completed or cancelled
+    if (appointment.status === 'completed') {
+      return res.status(400).json({ error: 'appointment_already_completed' });
+    }
+
+    if (appointment.status === 'cancelled') {
+      return res.status(400).json({ error: 'cannot_complete_cancelled_appointment' });
+    }
+
+    // Update appointment status to completed
+    await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status: 'completed' }
+    });
+
+    res.json({ 
+      success: true,
+      message: 'Appointment marked as completed successfully' 
+    });
+
+  } catch (error) {
+    console.error('Complete appointment error:', error);
+    res.status(500).json({ error: 'complete_appointment_failed' });
+  }
+});
+
+/**
+ * PUT /appointments/:appointmentId/cancel-by-doctor
+ * Cancel an appointment by the doctor
+ */
+// Add this to your existing src/routes/appointments.js file
+// Place these routes after your existing routes but before module.exports = r;
+
+/**
+ * GET /appointments/doctor-appointments
+ * Returns all appointments for the authenticated doctor/provider
+ * Includes patient details, appointment status, and scheduling information
+ */
+r.get('/doctor-appointments', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const userId = req.auth.userId; // This is the User.id
+
+    // Get the Provider record using the User.id
+    const provider = await prisma.provider.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_profile_not_found' });
+    }
+
+    const providerId = provider.id; // This is the actual Provider.id
+
+    // Get all appointments for this provider with patient and slot details
+    const appointments = await prisma.appointment.findMany({
+      where: {
+        providerId: providerId
+      },
+      include: {
+        patient: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                phone: true,
+                createdAt: true
+              }
+            }
+          }
+        },
+        slot: {
+          select: {
+            startTime: true,
+            endTime: true
+          }
+        },
+        provider: {
+          select: {
+            appointmentFee: true,
+            speciality: true
+          }
+        }
+      },
+      orderBy: [
+        {
+          slot: {
+            startTime: 'desc'
+          }
+        },
+        {
+          createdAt: 'desc'
+        }
+      ]
+    });
+
+    // Transform appointments to match the expected format for doctor dashboard
+    const formattedAppointments = appointments.map(appointment => {
+      const slotDate = appointment.slot.startTime;
+      
+      return {
+        _id: appointment.id,
+        userData: {
+          name: appointment.patient.user.name,
+          email: appointment.patient.user.email,
+          phone: appointment.patient.user.phone || 'N/A',
+          image: `https://via.placeholder.com/100/4F46E5/FFFFFF?Text=${encodeURIComponent(appointment.patient.user.name.substring(0, 2))}`,
+          dob: null, // You might want to add date of birth to patient model if needed
+          age: appointment.patient.age,
+          gender: appointment.patient.gender,
+          address: appointment.patient.address || 'N/A'
+        },
+        // Format date as "DD_MM_YYYY" to match existing format
+        slotDate: `${slotDate.getDate().toString().padStart(2, '0')}_${(slotDate.getMonth() + 1).toString().padStart(2, '0')}_${slotDate.getFullYear()}`,
+        slotTime: appointment.slot.startTime.toLocaleTimeString('en-US', {
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: true
+        }),
+        amount: Number(appointment.provider.appointmentFee),
+        payment: true, // Assuming online payment by default
+        cancelled: appointment.status === 'cancelled',
+        isCompleted: appointment.status === 'completed',
+        status: appointment.status,
+        reason: appointment.reason,
+        appointmentDate: appointment.slot.startTime,
+        endTime: appointment.slot.endTime,
+        createdAt: appointment.createdAt,
+        patientId: appointment.patient.id,
+        slotId: appointment.slotId
+      };
+    });
+
+    // Calculate dashboard statistics
+    const totalAppointments = appointments.length;
+    const completedAppointments = appointments.filter(apt => apt.status === 'completed').length;
+    const cancelledAppointments = appointments.filter(apt => apt.status === 'cancelled').length;
+    const upcomingAppointments = appointments.filter(apt => 
+      apt.status === 'booked' && new Date(apt.slot.startTime) > new Date()
+    ).length;
+    
+    // Calculate earnings from completed appointments
+    const totalEarnings = appointments
+      .filter(apt => apt.status === 'completed')
+      .reduce((sum, apt) => sum + Number(apt.provider.appointmentFee), 0);
+
+    // Get unique patients count
+    const uniquePatients = new Set(appointments.map(apt => apt.patientId)).size;
+
+    // Get latest appointments for dashboard preview (last 5)
+    const latestAppointments = formattedAppointments.slice(0, 5);
+
+    res.json({
+      success: true,
+      appointments: formattedAppointments,
+      dashData: {
+        appointments: totalAppointments,
+        patients: uniquePatients,
+        earnings: totalEarnings,
+        completed: completedAppointments,
+        cancelled: cancelledAppointments,
+        upcoming: upcomingAppointments,
+        latestAppointments: latestAppointments
+      },
+      total: totalAppointments,
+      statistics: {
+        totalAppointments,
+        completedAppointments,
+        cancelledAppointments,
+        upcomingAppointments,
+        totalEarnings,
+        uniquePatients
+      }
+    });
+
+  } catch (error) {
+    console.error('Fetch doctor appointments error:', error);
+    res.status(500).json({ error: 'fetch_appointments_failed' });
+  }
+});
+
+/**
+ * PUT /appointments/:appointmentId/complete
+ * Mark an appointment as completed by the doctor
+ */
+r.put('/:appointmentId/complete', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+    const userId = req.auth.userId;
+
+    // Get the Provider record using the User.id
+    const provider = await prisma.provider.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_profile_not_found' });
+    }
+
+    const providerId = provider.id;
+
+    // Find the appointment and verify it belongs to this provider
+    const appointment = await prisma.appointment.findFirst({
+      where: {
+        id: appointmentId,
+        providerId: providerId
+      },
+      include: {
+        slot: true
+      }
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ error: 'appointment_not_found' });
+    }
+
+    // Check if appointment is already completed or cancelled
+    if (appointment.status === 'completed') {
+      return res.status(400).json({ error: 'appointment_already_completed' });
+    }
+
+    if (appointment.status === 'cancelled') {
+      return res.status(400).json({ error: 'cannot_complete_cancelled_appointment' });
+    }
+
+    // Update appointment status to completed
+    await prisma.appointment.update({
+      where: { id: appointmentId },
+      data: { status: 'completed' }
+    });
+
+    res.json({ 
+      success: true,
+      message: 'Appointment marked as completed successfully' 
+    });
+
+  } catch (error) {
+    console.error('Complete appointment error:', error);
+    res.status(500).json({ error: 'complete_appointment_failed' });
+  }
+});
+
+/**
+ * PUT /appointments/:appointmentId/cancel-by-doctor
+ * Cancel an appointment by the doctor
+ */
+r.put('/:appointmentId/cancel-by-doctor', authRequired, requireRole('provider'), async (req, res) => {
+  try {
+    const { appointmentId } = req.params;
+    const userId = req.auth.userId;
+
+    // Get the Provider record using the User.id
+    const provider = await prisma.provider.findUnique({
+      where: { userId: userId }
+    });
+
+    if (!provider) {
+      return res.status(404).json({ error: 'provider_profile_not_found' });
+    }
+
+    const providerId = provider.id;
+
+    // Find the appointment and verify it belongs to this provider
+    const appointment = await prisma.appointment.findFirst({
+      where: {
+        id: appointmentId,
+        providerId: providerId
+      },
+      include: {
+        slot: true
+      }
+    });
+
+    if (!appointment) {
+      return res.status(404).json({ error: 'appointment_not_found' });
+    }
+
+    // Check if appointment is already cancelled or completed
+    if (appointment.status === 'cancelled') {
+      return res.status(400).json({ error: 'appointment_already_cancelled' });
+    }
+
+    if (appointment.status === 'completed') {
+      return res.status(400).json({ error: 'cannot_cancel_completed_appointment' });
+    }
+
+    // Update appointment status and slot availability using transaction
+    await prisma.$transaction([
+      prisma.appointment.update({
+        where: { id: appointmentId },
+        data: { status: 'cancelled' }
+      }),
+      prisma.providerSlot.update({
+        where: { id: appointment.slotId },
+        data: { isBooked: false }
+      })
+    ]);
+
+    res.json({ 
+      success: true,
+      message: 'Appointment cancelled successfully' 
+    });
+
+  } catch (error) {
+    console.error('Cancel appointment error:', error);
+    res.status(500).json({ error: 'cancel_appointment_failed' });
+  }
+});
 module.exports = r;
